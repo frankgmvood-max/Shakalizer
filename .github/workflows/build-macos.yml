@@ -46,7 +46,7 @@ jobs:
           import glob
           from pathlib import Path
 
-          def reconstruct(pattern: str, destination: str) -> None:
+          def reconstruct_chunks(pattern: str, destination: str) -> None:
               parts = sorted(glob.glob(pattern))
               if not parts:
                   raise SystemExit(f"No payload chunks found for {pattern}")
@@ -54,12 +54,17 @@ jobs:
               Path(destination).write_bytes(base64.b64decode(encoded, validate=True))
               print(f"{destination}: reconstructed from {len(parts)} chunk(s)")
 
-          reconstruct("payload/gui_*.b64", "shakalizer_gui.py")
-          reconstruct("payload/core_*.b64", "shakalizer_core.py")
-          reconstruct("payload/build_*.b64", "build_mac.py")
+          def reconstruct_one(source: str, destination: str) -> None:
+              encoded = Path(source).read_text(encoding="utf-8").strip()
+              Path(destination).write_bytes(base64.b64decode(encoded, validate=True))
+              print(f"{destination}: reconstructed from {source}")
+
+          reconstruct_chunks("payload/gui_*.b64", "shakalizer_gui.py")
+          reconstruct_chunks("payload/core_*.b64", "shakalizer_core.py")
+          reconstruct_chunks("payload/build_*.b64", "build_mac.py")
 
           Path("assets").mkdir(exist_ok=True)
-          reconstruct("payload/jackal_*.b64", "assets/jackal_01.png")
+          reconstruct_one("payload/jackal_small.b64", "assets/jackal_01.png")
           PY
 
       - name: Install build dependencies
