@@ -1,0 +1,7 @@
+Pillow>=11.0
+pillow-heif>=0.18
+rawpy>=0.24
+numpy>=2.0
+PyMuPDF>=1.25
+PyInstaller>=6.10
+tkinterdnd2>=0.4.2
