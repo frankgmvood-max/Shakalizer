@@ -1,0 +1,153 @@
+name: Build macOS DMG
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-macos.yml"
+      - "payload/**"
+      - "generate_assets.py"
+      - "requirements-mac.txt"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.display_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            display_name: Apple Silicon
+            asset_name: Apple-Silicon
+          - runner: macos-15-intel
+            display_name: Intel
+            asset_name: Intel
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Reconstruct source files
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64
+          import glob
+          from pathlib import Path
+
+          def reconstruct(pattern: str, destination: str) -> None:
+              parts = sorted(glob.glob(pattern))
+              if not parts:
+                  raise SystemExit(f"No payload chunks found for {pattern}")
+              encoded = "".join(Path(part).read_text(encoding="utf-8").strip() for part in parts)
+              Path(destination).write_bytes(base64.b64decode(encoded, validate=True))
+              print(f"{destination}: reconstructed from {len(parts)} chunk(s)")
+
+          reconstruct("payload/gui_*.b64", "shakalizer_gui.py")
+          reconstruct("payload/core_*.b64", "shakalizer_core.py")
+          reconstruct("payload/build_*.b64", "build_mac.py")
+
+          Path("assets").mkdir(exist_ok=True)
+          reconstruct("payload/jackal_*.b64", "assets/jackal_01.png")
+          PY
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install -r requirements-mac.txt
+
+      - name: Generate application assets
+        run: python generate_assets.py
+
+      - name: Validate Python sources and assets
+        shell: bash
+        run: |
+          python -m py_compile shakalizer_gui.py shakalizer_core.py build_mac.py
+          python - <<'PY'
+          from PIL import Image
+          from pathlib import Path
+          for path in [Path("assets/jackal_01.png"), Path("assets/jackal_10.png"), Path("assets/converter.png")]:
+              with Image.open(path) as image:
+                  image.verify()
+              print(f"Verified: {path}")
+          PY
+
+      - name: Build Shakalizer.app and DMG
+        run: python build_mac.py
+
+      - name: Verify app bundle
+        shell: bash
+        run: |
+          test -d dist/Shakalizer.app
+          codesign --verify --deep --strict dist/Shakalizer.app
+          echo "Runner architecture: $(uname -m)"
+          file dist/Shakalizer.app/Contents/MacOS/Shakalizer
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          mkdir -p release
+          DMG="$(find dist -maxdepth 1 -name 'Shakalizer-macOS-*.dmg' -print -quit)"
+          test -n "$DMG"
+          OUT="release/Shakalizer-macOS-${{ matrix.asset_name }}.dmg"
+          cp "$DMG" "$OUT"
+          shasum -a 256 "$OUT" > "$OUT.sha256"
+          ls -lh release
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shakalizer-macOS-${{ matrix.asset_name }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish macOS release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download both DMGs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Shakalizer-macOS-*
+          merge-multiple: true
+          path: release
+
+      - name: List release files
+        run: ls -lh release
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: v1.0.0-mac
+        shell: bash
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" release/* \
+              --target "$GITHUB_SHA" \
+              --title "Shakalizer for macOS" \
+              --notes "Native macOS builds of Shakalizer.
+
+          Download **Apple-Silicon** for M1/M2/M3/M4/M5 Macs.
+          Download **Intel** for Intel-based Macs.
+
+          Open the DMG and drag Shakalizer.app into Applications.
+
+          These builds are ad-hoc signed, but not Apple-notarized yet. On first launch, macOS may require Control-click → Open."
+          fi
