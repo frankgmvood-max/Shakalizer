@@ -94,6 +94,68 @@ jobs:
           echo "Runner architecture: $(uname -m)"
           file dist/Shakalizer.app/Contents/MacOS/Shakalizer
 
+      - name: Smoke-test native GUI and bundled app
+        shell: bash
+        run: |
+          python - <<'PYTEST'
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          from unittest.mock import patch
+          from PIL import Image
+          import shakalizer_gui as gui
+          from shakalizer_core import convert_one
+
+          with patch.object(gui, "load_settings", return_value={}):
+              app = gui.ShakalizerApp()
+              try:
+                  app.update_idletasks()
+                  app.update()
+                  assert len(app.jackal_images) == 10
+                  print("Native GUI initialized, including Tk and image assets")
+              finally:
+                  app.destroy()
+
+          with tempfile.TemporaryDirectory() as temporary:
+              root = Path(temporary)
+              source = root / "alpha.png"
+              with Image.new("RGBA", (128, 96), (255, 30, 60, 0)) as image:
+                  image.paste((20, 70, 180, 255), (32, 24, 96, 72))
+                  image.save(source)
+              for fmt in ("JPEG", "PNG", "WEBP"):
+                  result = convert_one(source, root / "out", None, 1, 60, fmt)
+                  assert result.success, result.message
+                  assert result.output.stat().st_size <= 60 * 1024
+                  with Image.open(result.output) as image:
+                      image.load()
+                      if fmt != "JPEG":
+                          assert image.convert("RGBA").getpixel((0, 0))[3] == 0
+                  print(f"{fmt}: conversion, size limit and transparency OK")
+
+              log = root / "bundle-startup.log"
+              with log.open("wb") as output:
+                  process = subprocess.Popen(
+                      [str(Path("dist/Shakalizer.app/Contents/MacOS/Shakalizer").resolve())],
+                      stdout=output, stderr=subprocess.STDOUT,
+                  )
+                  try:
+                      try:
+                          code = process.wait(timeout=8)
+                      except subprocess.TimeoutExpired:
+                          print("Bundled application remained running after launch")
+                      else:
+                          raise RuntimeError(f"Bundled app exited during startup ({code}): {log.read_text(errors='replace')}")
+                  finally:
+                      if process.poll() is None:
+                          process.terminate()
+                          try:
+                              process.wait(timeout=5)
+                          except subprocess.TimeoutExpired:
+                              process.kill()
+                              process.wait()
+              print(log.read_text(errors="replace"))
+          PYTEST
+
       - name: Prepare release files
         shell: bash
         run: |
