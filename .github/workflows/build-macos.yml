@@ -14,6 +14,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: shakalizer-macos-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build ${{ matrix.display_name }}
@@ -98,13 +102,15 @@ jobs:
         shell: bash
         run: |
           python - <<'PYTEST'
+          import io
+          import random
           import subprocess
           import tempfile
           from pathlib import Path
           from unittest.mock import patch
           from PIL import Image
           import shakalizer_gui as gui
-          from shakalizer_core import convert_one
+          from shakalizer_core import convert_one, _encode_png_palette
 
           with patch.object(gui, "load_settings", return_value={}):
               app = gui.ShakalizerApp()
@@ -115,6 +121,21 @@ jobs:
                   print("Native GUI initialized, including Tk and image assets")
               finally:
                   app.destroy()
+
+          # Mixed alpha values used to tint the empty background during
+          # palette reduction. Check alpha=0 separately from alpha>0.
+          rng = random.Random(47)
+          with Image.frombytes("RGBA", (128, 96), rng.randbytes(128 * 96 * 4)) as image:
+              image.paste((0, 0, 0, 0), (0, 0, 20, 96))
+              for colors in (2, 12, 128, 256):
+                  data = _encode_png_palette(image, colors)
+                  with Image.open(io.BytesIO(data)) as encoded:
+                      with encoded.convert("RGBA") as rgba:
+                          assert rgba.getpixel((0, 48))[3] == 0
+                          assert rgba.getpixel((19, 48))[3] == 0
+                          with rgba.getchannel("A") as alpha:
+                              assert alpha.getextrema()[1] > 0
+              print("PNG mixed-alpha regression: empty background and subject preserved")
 
           with tempfile.TemporaryDirectory() as temporary:
               root = Path(temporary)
@@ -195,7 +216,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: v1.0.0-mac
+          TAG: v1.0.1-mac
         shell: bash
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
